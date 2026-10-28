@@ -9,6 +9,7 @@
 <link rel="apple-touch-icon" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -136,9 +137,69 @@
     font-size:12.5px;color:var(--ink-faint);
   }
 
+  /* ── signed-in bar ── */
+  .bar{
+    display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;
+    margin:-18px 0 22px;font-size:13px;color:var(--ink-soft);
+  }
+  .bar .who b{color:var(--ink);font-weight:600}
+  .bar .acts{display:flex;gap:8px}
+  .btn{
+    font:inherit;font-size:13px;font-weight:600;letter-spacing:-.01em;
+    padding:8px 14px;border-radius:999px;cursor:pointer;
+    border:1px solid rgba(255,255,255,.75);color:var(--ink);
+    background:rgba(255,255,255,.6);
+    -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+    box-shadow:0 2px 8px rgba(20,28,45,.08);
+  }
+  .btn:hover{background:rgba(255,255,255,.85)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:#0062c4}
+  .btn:disabled{opacity:.5;cursor:default}
+  .hidden{display:none!important}
+
+  /* ── glass panel (sign-in, messages, admin) ── */
+  .panel{
+    padding:22px;border-radius:20px;
+    background:rgba(255,255,255,.62);
+    -webkit-backdrop-filter:blur(20px) saturate(1.7);
+    backdrop-filter:blur(20px) saturate(1.7);
+    border:1px solid rgba(255,255,255,.7);
+    box-shadow:0 1px 1px rgba(255,255,255,.6) inset,0 8px 28px rgba(20,28,45,.10);
+  }
+  .panel h2{font-size:19px;font-weight:600;letter-spacing:-.02em;margin-bottom:6px}
+  .panel p{font-size:14px;color:var(--ink-soft);line-height:1.5}
+  .panel .btn{margin-top:16px}
+  .msg{max-width:440px}
+  .err{color:#c0362c}
+
+  /* ── manage access ── */
+  .admin{margin-top:28px}
+  .admin-head{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+  .admin-head .btn{margin-top:0}
+  .tblwrap{overflow-x:auto;margin:0 -6px;padding:0 6px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{padding:9px 8px;border-bottom:1px solid var(--hairline);text-align:center;white-space:nowrap}
+  th{font-size:11.5px;font-weight:600;color:var(--ink-soft);vertical-align:bottom;white-space:normal;min-width:64px;line-height:1.25}
+  th:first-child,td:first-child{text-align:left;min-width:180px}
+  td .pname{font-weight:600}
+  td .pmail{font-size:12px;color:var(--ink-faint)}
+  td input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
+  tr.dirty td{background:rgba(0,113,227,.06)}
+  .x{border:0;background:none;color:var(--ink-faint);font-size:16px;cursor:pointer;padding:2px 6px}
+  .x:hover{color:#c0362c}
+  .addrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .addrow input{
+    font:inherit;font-size:13px;padding:8px 12px;border-radius:10px;
+    border:1px solid var(--hairline);background:rgba(255,255,255,.8);min-width:0;flex:1 1 180px;
+  }
+  .addrow .btn{margin-top:0}
+  .savebar{display:flex;align-items:center;gap:12px;margin-top:16px;font-size:13px;color:var(--ink-soft)}
+  .savebar .btn{margin-top:0}
+
   /* accessibility: drop transparency if the user asks for it */
   @media (prefers-reduced-transparency:reduce){
-    .card{background:#fff;-webkit-backdrop-filter:none;backdrop-filter:none}
+    .card,.panel,.btn{background:#fff;-webkit-backdrop-filter:none;backdrop-filter:none}
   }
   @media (prefers-reduced-motion:reduce){
     .card,.chev{transition:none}
@@ -154,7 +215,37 @@
     <div class="sub">Quick access to internal tools.</div>
   </header>
 
+  <div class="bar hidden" id="bar">
+    <span class="who">Signed in as <b id="whoName"></b></span>
+    <span class="acts">
+      <button class="btn hidden" id="manageBtn">Manage access</button>
+      <button class="btn" id="signOutBtn">Sign out</button>
+    </span>
+  </div>
+
+  <div class="panel msg hidden" id="msg"></div>
+
   <div class="grid" id="grid"></div>
+
+  <section class="panel admin hidden" id="admin">
+    <div class="admin-head">
+      <div>
+        <h2>Manage access</h2>
+        <p>Tick the tools each person sees. People appear here after they sign in once, or add them by email.</p>
+      </div>
+      <button class="btn" id="closeAdmin">Done</button>
+    </div>
+    <div class="tblwrap"><table id="accessTbl"></table></div>
+    <div class="addrow">
+      <input id="addEmail" type="email" placeholder="name@metro1solutions.com" autocomplete="off">
+      <input id="addName" type="text" placeholder="Name (optional)" autocomplete="off">
+      <button class="btn" id="addBtn">Add person</button>
+    </div>
+    <div class="savebar">
+      <button class="btn primary" id="saveBtn" disabled>Save changes</button>
+      <span id="saveMsg"></span>
+    </div>
+  </section>
 
   <footer>
     <span id="datestamp">—</span>
@@ -212,23 +303,246 @@
   ];
   /* ───────────────────────────────────────────────────────────── */
 
-  const grid = document.getElementById('grid');
-  TOOLS.forEach(t => {
-    const a = document.createElement('a');
-    a.href = t.url; a.target = '_blank'; a.rel = 'noopener';
-    a.className = 'card';
-    a.innerHTML = `
-      <div class="mono">${t.name.trim().charAt(0).toUpperCase()}</div>
-      <div class="label">
-        <div class="text">
-          <div class="name">${t.name}</div>
-          <div class="click here">Open</div>
+  /* Sign-in reuses the Fragrance Library app registration; this page's URL
+     must be listed under its SPA redirect URIs. Who sees which tool lives in
+     the Tool_Hub_Access list on /sites/Production (one row per person). */
+  const CFG = {
+    clientId : "4f09444a-97b0-45b8-a20c-f9fa4a3e0122",
+    tenantId : "eeea7e3e-9ccb-4a16-894e-3417c6a7a4c1",
+    site     : "met1sol.sharepoint.com:/sites/Production",
+    list     : "Tool_Hub_Access",
+    scopes   : ["User.Read", "Sites.ReadWrite.All"],
+    manageScopes : ["Sites.Manage.All"],          // only asked for when creating the list
+    admins   : ["saul@metro1solutions.com"]
+  };
+  const G = "https://graph.microsoft.com/v1.0";
+  const DEMO = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get("demo");
+
+  // a tool's key in the access list comes from its name; renaming a tool means re-ticking it
+  TOOLS.forEach(t => { t.id = t.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); });
+  const $ = id => document.getElementById(id);
+  const grid = $('grid');
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+  const splitIds = v => String(v || "").split(/[;,\s]+/).filter(Boolean);
+
+  const S = { acct:null, email:"", name:"", admin:false, siteId:null, people:[], dirty:new Set(), removed:[] };
+
+  /* ── msal ── */
+  const msalApp = (!DEMO && window.msal) ? new msal.PublicClientApplication({
+    auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId,
+           redirectUri:location.origin + location.pathname },
+    cache:{ cacheLocation:"localStorage" }
+  }) : null;
+
+  async function getToken(scopes){
+    scopes = scopes || CFG.scopes;
+    try { return (await msalApp.acquireTokenSilent({ scopes, account:S.acct })).accessToken; }
+    catch(e){ msalApp.acquireTokenRedirect({ scopes }); return new Promise(() => {}); }
+  }
+
+  async function gf(path, opts){
+    opts = opts || {};
+    if (DEMO) return demoGraph(path, opts);
+    const tok = await getToken(opts.scopes);
+    const h = { Authorization:"Bearer " + tok };
+    if (opts.body) h["Content-Type"] = "application/json";
+    const res = await fetch(/^https?:/.test(path) ? path : G + path, { method:opts.method || "GET", headers:h, body:opts.body });
+    if (res.status === 429 || res.status === 503){
+      await new Promise(r => setTimeout(r, parseInt(res.headers.get("Retry-After") || "3", 10) * 1000));
+      return gf(path, opts);
+    }
+    if (!res.ok){
+      let msg = await res.text().catch(() => "");
+      try { msg = JSON.parse(msg).error.message || msg; } catch(e){}
+      const err = new Error("SharePoint " + res.status + ": " + String(msg).slice(0, 200));
+      err.status = res.status; throw err;
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  /* ── access list ── */
+  const itemsPath = () => "/sites/" + S.siteId + "/lists/" + CFG.list + "/items";
+
+  async function ensureList(){
+    try { await gf("/sites/" + S.siteId + "/lists/" + CFG.list + "?$select=id"); return true; }
+    catch(e){
+      if (e.status !== 404) throw e;
+      if (!S.admin) return false;
+      await gf("/sites/" + S.siteId + "/lists", { method:"POST", scopes:CFG.manageScopes, body:JSON.stringify({
+        displayName:CFG.list, list:{ template:"genericList" },
+        columns:[ { name:"DisplayName", text:{} }, { name:"Tools", text:{ allowMultipleLines:true } } ]
+      })});
+      return true;
+    }
+  }
+
+  async function loadPeople(){
+    let url = itemsPath() + "?$expand=fields($select=Title,DisplayName,Tools)&$top=500", out = [];
+    while (url){
+      const r = await gf(url);
+      r.value.forEach(it => out.push({
+        itemId:it.id, email:String(it.fields.Title || "").trim().toLowerCase(),
+        name:it.fields.DisplayName || "", tools:splitIds(it.fields.Tools)
+      }));
+      url = r["@odata.nextLink"];
+    }
+    S.people = out.filter(p => p.email).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+  }
+
+  /* ── screens ── */
+  function showMsg(html){ const m = $("msg"); m.innerHTML = html; m.classList.remove("hidden"); }
+  function hideMsg(){ $("msg").classList.add("hidden"); }
+
+  function showGate(err){
+    $("bar").classList.add("hidden");
+    showMsg('<h2>Sign in</h2><p>Use your Metro1 Microsoft account to see your tools.</p>' +
+      (err ? '<p class="err">' + esc(err) + '</p>' : '') +
+      '<button class="btn primary" id="signInBtn">Sign in with Microsoft</button>');
+    $("signInBtn").onclick = () => msalApp.loginRedirect({ scopes:CFG.scopes });
+  }
+
+  function renderCards(ids){
+    grid.innerHTML = "";
+    const list = ids ? TOOLS.filter(t => ids.includes(t.id)) : TOOLS;
+    if (!list.length){
+      showMsg('<h2>No tools assigned yet</h2><p>Ask Saul to give you access to the tools you need.</p>');
+      return;
+    }
+    hideMsg();
+    list.forEach(t => {
+      const a = document.createElement('a');
+      a.href = t.url; a.target = '_blank'; a.rel = 'noopener';
+      a.className = 'card';
+      a.innerHTML = `
+        <div class="mono">${t.name.trim().charAt(0).toUpperCase()}</div>
+        <div class="label">
+          <div class="text">
+            <div class="name">${t.name}</div>
+            <div class="click here">Open</div>
+          </div>
+          <div class="chev">›</div>
         </div>
-        <div class="chev">›</div>
-      </div>
-    `;
-    grid.appendChild(a);
+      `;
+      grid.appendChild(a);
+    });
+  }
+
+  /* ── manage access (admin only) ── */
+  function renderAdmin(){
+    const tbl = $("accessTbl");
+    let h = '<thead><tr><th>Person</th>' + TOOLS.map(t => '<th>' + esc(t.name.trim()) + '</th>').join("") + '<th></th></tr></thead><tbody>';
+    S.people.forEach((p, i) => {
+      h += '<tr class="' + (S.dirty.has(p) ? "dirty" : "") + '"><td><div class="pname">' + esc(p.name || p.email) + '</div>' +
+        (p.name ? '<div class="pmail">' + esc(p.email) + '</div>' : '') + '</td>' +
+        TOOLS.map(t => '<td><input type="checkbox" data-p="' + i + '" data-t="' + t.id + '"' + (p.tools.includes(t.id) ? " checked" : "") + '></td>').join("") +
+        '<td><button class="x" title="Remove person" data-del="' + i + '">&times;</button></td></tr>';
+    });
+    if (!S.people.length) h += '<tr><td colspan="' + (TOOLS.length + 2) + '" style="color:var(--ink-faint)">Nobody yet. Add someone below, or they appear here after signing in.</td></tr>';
+    tbl.innerHTML = h + '</tbody>';
+    $("saveBtn").disabled = !S.dirty.size && !S.removed.length;
+  }
+
+  $("accessTbl").addEventListener("change", e => {
+    const c = e.target; if (c.dataset.p == null) return;
+    const p = S.people[+c.dataset.p];
+    p.tools = c.checked ? p.tools.concat(c.dataset.t) : p.tools.filter(x => x !== c.dataset.t);
+    S.dirty.add(p); $("saveMsg").textContent = ""; renderAdmin();
   });
+  $("accessTbl").addEventListener("click", e => {
+    const i = e.target.dataset.del; if (i == null) return;
+    const p = S.people[+i];
+    if (!confirm("Remove " + (p.name || p.email) + "? They will see no tools.")) return;
+    S.people.splice(+i, 1); S.dirty.delete(p);
+    if (p.itemId) S.removed.push(p);
+    $("saveMsg").textContent = ""; renderAdmin();
+  });
+  $("addBtn").onclick = () => {
+    const email = $("addEmail").value.trim().toLowerCase(), name = $("addName").value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ $("saveMsg").textContent = "Enter a valid email."; return; }
+    if (S.people.some(p => p.email === email)){ $("saveMsg").textContent = email + " is already in the list."; return; }
+    const p = { itemId:null, email, name, tools:[] };
+    S.people.push(p); S.dirty.add(p);
+    $("addEmail").value = $("addName").value = ""; $("saveMsg").textContent = ""; renderAdmin();
+  };
+  $("saveBtn").onclick = async () => {
+    const btn = $("saveBtn"); btn.disabled = true; $("saveMsg").textContent = "Saving…";
+    try {
+      for (const p of S.removed) await gf(itemsPath() + "/" + p.itemId, { method:"DELETE" });
+      S.removed = [];
+      for (const p of Array.from(S.dirty)){
+        const fields = { Title:p.email, DisplayName:p.name, Tools:TOOLS.filter(t => p.tools.includes(t.id)).map(t => t.id).join(", ") };
+        if (p.itemId) await gf(itemsPath() + "/" + p.itemId + "/fields", { method:"PATCH", body:JSON.stringify(fields) });
+        else p.itemId = (await gf(itemsPath(), { method:"POST", body:JSON.stringify({ fields }) })).id;
+        S.dirty.delete(p);
+      }
+      $("saveMsg").textContent = "Saved.";
+    } catch(e){ $("saveMsg").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+    renderAdmin();
+  };
+  $("manageBtn").onclick = () => { $("admin").classList.remove("hidden"); renderAdmin(); $("admin").scrollIntoView({ behavior:"smooth" }); };
+  $("closeAdmin").onclick = () => $("admin").classList.add("hidden");
+  $("signOutBtn").onclick = () => DEMO ? location.reload() : msalApp.logoutRedirect({ account:S.acct });
+
+  /* ── start ── */
+  async function enter(acct){
+    S.acct = acct;
+    S.email = String(acct.username || "").toLowerCase();
+    S.name = acct.name || S.email;
+    S.admin = CFG.admins.includes(S.email);
+    $("whoName").textContent = S.name;
+    $("bar").classList.remove("hidden");
+    $("manageBtn").classList.toggle("hidden", !S.admin);
+    if (S.admin) renderCards(null);
+    else showMsg('<p>Loading your tools…</p>');
+    try {
+      S.siteId = (await gf("/sites/" + CFG.site + "?$select=id")).id;
+      if (!(await ensureList())){ renderCards([]); return; }
+      await loadPeople();
+      if (!S.admin && !S.people.some(p => p.email === S.email)){
+        // first visit: add a row so they show up on the Manage access screen
+        const me = { itemId:null, email:S.email, name:S.name, tools:[] };
+        try {
+          me.itemId = (await gf(itemsPath(), { method:"POST", body:JSON.stringify({ fields:{ Title:S.email, DisplayName:S.name, Tools:"" } }) })).id;
+          S.people.push(me);
+        } catch(e){}
+      }
+      if (!S.admin){
+        const me = S.people.find(p => p.email === S.email);
+        renderCards(me ? me.tools : []);
+      }
+    } catch(e){
+      if (S.admin) showMsg('<p class="err">Could not load the access list. ' + esc(e.message) + '</p>');
+      else showMsg('<h2>Could not load your tools</h2><p class="err">' + esc(e.message) + '</p>');
+    }
+  }
+
+  async function start(){
+    if (DEMO) return enter({ username:DEMO === "admin" ? CFG.admins[0] : "pat@metro1solutions.com", name:DEMO === "admin" ? "Saul Braha" : "Pat Demo" });
+    if (!msalApp){ showMsg('<p class="err">The Microsoft sign-in library did not load. Refresh the page.</p>'); return; }
+    await msalApp.initialize();
+    let res = null, err = "";
+    try { res = await msalApp.handleRedirectPromise(); } catch(e){ err = "Sign-in failed: " + (e.errorMessage || e.message || e); }
+    const acct = (res && res.account) || msalApp.getAllAccounts()[0];
+    if (acct) enter(acct); else showGate(err);
+  }
+
+  /* local testing only: open http://localhost:<port>/?demo=admin or ?demo=user */
+  const demoRows = [
+    { id:"1", fields:{ Title:"pat@metro1solutions.com", DisplayName:"Pat Demo", Tools:"order-tracker, dev-tracker" } },
+    { id:"2", fields:{ Title:"lee@metro1solutions.com", DisplayName:"Lee Demo", Tools:"" } }
+  ];
+  async function demoGraph(path, opts){
+    await new Promise(r => setTimeout(r, 150));
+    const m = opts.method || "GET";
+    if (/\/sites\/[^/]+\?/.test(path)) return { id:"demo-site" };
+    if (/\/items\?/.test(path)) return { value:JSON.parse(JSON.stringify(demoRows)) };
+    if (m === "POST" && /\/items$/.test(path)){ const id = String(Date.now()); demoRows.push({ id, fields:JSON.parse(opts.body).fields }); return { id }; }
+    if (m === "PATCH"){ const id = path.split("/").slice(-2)[0]; Object.assign(demoRows.find(r => r.id === id).fields, JSON.parse(opts.body)); return {}; }
+    if (m === "DELETE"){ const id = path.split("/").pop(); demoRows.splice(demoRows.findIndex(r => r.id === id), 1); return null; }
+    return {};
+  }
+
+  start();
 
   document.getElementById('datestamp').textContent =
     new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
