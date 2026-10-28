@@ -196,6 +196,14 @@
   .addrow .btn{margin-top:0}
   .savebar{display:flex;align-items:center;gap:12px;margin-top:16px;font-size:13px;color:var(--ink-soft)}
   .savebar .btn{margin-top:0}
+  table.tools th,table.tools td{text-align:left}
+  table.tools th:first-child,table.tools td:first-child{min-width:0;width:1%}
+  table.tools .tin{
+    font:inherit;font-size:13px;width:100%;min-width:150px;padding:7px 10px;border-radius:9px;
+    border:1px solid var(--hairline);background:rgba(255,255,255,.8);
+  }
+  table.tools .turl{min-width:260px}
+  .x:disabled{opacity:.3;cursor:default}
 
   /* accessibility: drop transparency if the user asks for it */
   @media (prefers-reduced-transparency:reduce){
@@ -227,7 +235,8 @@
 
   <div class="grid" id="grid"></div>
 
-  <section class="panel admin hidden" id="admin">
+  <div class="hidden" id="admin">
+  <section class="panel admin">
     <div class="admin-head">
       <div>
         <h2>Manage access</h2>
@@ -247,6 +256,22 @@
     </div>
   </section>
 
+  <section class="panel admin">
+    <h2>Tools</h2>
+    <p>Add, rename, reorder or remove tools. A new tool is hidden from everyone until you tick it above.</p>
+    <div class="tblwrap"><table id="toolsTbl" class="tools"></table></div>
+    <div class="addrow">
+      <input id="newToolName" type="text" placeholder="Tool name" autocomplete="off">
+      <input id="newToolUrl" type="url" placeholder="https://…" autocomplete="off">
+      <button class="btn" id="addToolBtn">Add tool</button>
+    </div>
+    <div class="savebar">
+      <button class="btn primary" id="saveToolsBtn" disabled>Save tools</button>
+      <span id="toolsMsg"></span>
+    </div>
+  </section>
+  </div>
+
   <footer>
     <span id="datestamp">—</span>
     <span>Metro1 Solutions, LLC — New York</span>
@@ -255,9 +280,10 @@
 </div>
 
 <script>
-  /* ─── ADD TOOLS HERE ──────────────────────────────────────────
-     Copy a block, fill name + url.                                */
-  const TOOLS = [
+  /* Starting tool list. The first time Saul signs in it is copied into the
+     Tool_Hub_Tools list; after that tools are added and edited on the site
+     (Manage access → Tools), and this list is only a fallback. */
+  let TOOLS = [
     {
       name: "Sample Warehouse",
       url: "https://saulb96.github.io/upc-scanner/"
@@ -281,7 +307,7 @@
       url: "https://saulb96.github.io/quote-directory/"
     },
     {
-      name: "Ecom Allocation ",
+      name: "Ecom Allocation",
       url: "https://saulb96.github.io/ecom-allocation/"
     },
     {
@@ -304,28 +330,36 @@
   /* ───────────────────────────────────────────────────────────── */
 
   /* Sign-in reuses the Fragrance Library app registration; this page's URL
-     must be listed under its SPA redirect URIs. Who sees which tool lives in
-     the Tool_Hub_Access list on /sites/Production (one row per person). */
+     must be listed under its SPA redirect URIs. Both lists live on
+     /sites/Production: Tool_Hub_Tools (one row per tool) and
+     Tool_Hub_Access (one row per person, with the tool keys they see). */
   const CFG = {
     clientId : "4f09444a-97b0-45b8-a20c-f9fa4a3e0122",
     tenantId : "eeea7e3e-9ccb-4a16-894e-3417c6a7a4c1",
     site     : "met1sol.sharepoint.com:/sites/Production",
     list     : "Tool_Hub_Access",
+    toolList : "Tool_Hub_Tools",
     scopes   : ["User.Read", "Sites.ReadWrite.All"],
-    manageScopes : ["Sites.Manage.All"],          // only asked for when creating the list
+    manageScopes : ["Sites.Manage.All"],          // only asked for when creating a list
     admins   : ["saul@metro1solutions.com"]
   };
+  const ACCESS_COLS = [ { name:"DisplayName", text:{} }, { name:"Tools", text:{ allowMultipleLines:true } } ];
+  const TOOL_COLS = [ { name:"Url", text:{} }, { name:"ToolKey", text:{} }, { name:"SortOrder", number:{} } ];
   const G = "https://graph.microsoft.com/v1.0";
   const DEMO = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get("demo");
 
-  // a tool's key in the access list comes from its name; renaming a tool means re-ticking it
-  TOOLS.forEach(t => { t.id = t.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); });
   const $ = id => document.getElementById(id);
   const grid = $('grid');
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const splitIds = v => String(v || "").split(/[;,\s]+/).filter(Boolean);
+  const slug = s => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const okUrl = u => /^https?:\/\/\S+$/i.test(String(u || "").trim());
 
-  const S = { acct:null, email:"", name:"", admin:false, siteId:null, people:[], dirty:new Set(), removed:[] };
+  // a tool's key is fixed when it is added, so renaming it keeps who can see it
+  TOOLS.forEach((t, i) => { t.id = slug(t.name); t.order = i; });
+
+  const S = { acct:null, email:"", name:"", admin:false, siteId:null, lists:{}, toolsLive:false,
+              people:[], dirty:new Set(), removed:[], tDirty:new Set(), tRemoved:[] };
 
   /* ── msal ── */
   const msalApp = (!DEMO && window.msal) ? new msal.PublicClientApplication({
@@ -360,33 +394,55 @@
     return res.status === 204 ? null : res.json();
   }
 
-  /* ── access list ── */
-  const itemsPath = () => "/sites/" + S.siteId + "/lists/" + CFG.list + "/items";
+  /* ── lists ── */
+  const itemsPath = name => "/sites/" + S.siteId + "/lists/" + S.lists[name] + "/items";
 
-  async function ensureList(){
-    try { await gf("/sites/" + S.siteId + "/lists/" + CFG.list + "?$select=id"); return true; }
+  // returns "exists", "created", or false when the list is missing and this user can't create it
+  async function ensureList(name, columns){
+    try { S.lists[name] = (await gf("/sites/" + S.siteId + "/lists/" + name + "?$select=id")).id; return "exists"; }
     catch(e){
       if (e.status !== 404) throw e;
       if (!S.admin) return false;
-      await gf("/sites/" + S.siteId + "/lists", { method:"POST", scopes:CFG.manageScopes, body:JSON.stringify({
-        displayName:CFG.list, list:{ template:"genericList" },
-        columns:[ { name:"DisplayName", text:{} }, { name:"Tools", text:{ allowMultipleLines:true } } ]
-      })});
-      return true;
+      S.lists[name] = (await gf("/sites/" + S.siteId + "/lists", { method:"POST", scopes:CFG.manageScopes, body:JSON.stringify({
+        displayName:name, list:{ template:"genericList" }, columns
+      })})).id;
+      return "created";
     }
   }
 
-  async function loadPeople(){
-    let url = itemsPath() + "?$expand=fields($select=Title,DisplayName,Tools)&$top=500", out = [];
+  async function readAll(name, select){
+    let url = itemsPath(name) + "?$expand=fields($select=" + select + ")&$top=500", out = [];
     while (url){
       const r = await gf(url);
-      r.value.forEach(it => out.push({
-        itemId:it.id, email:String(it.fields.Title || "").trim().toLowerCase(),
-        name:it.fields.DisplayName || "", tools:splitIds(it.fields.Tools)
-      }));
+      out = out.concat(r.value);
       url = r["@odata.nextLink"];
     }
-    S.people = out.filter(p => p.email).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+    return out;
+  }
+
+  async function loadTools(){
+    const st = await ensureList(CFG.toolList, TOOL_COLS);
+    if (!st) return;                                     // not set up yet: keep the starting list
+    if (st === "created"){
+      for (const t of TOOLS){
+        t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:toolFields(t) }) })).id;
+      }
+    }
+    TOOLS = (await readAll(CFG.toolList, "Title,Url,ToolKey,SortOrder"))
+      .map(it => ({ itemId:it.id, name:String(it.fields.Title || "").trim(), url:String(it.fields.Url || "").trim(),
+                    id:it.fields.ToolKey || slug(it.fields.Title), order:+it.fields.SortOrder || 0 }))
+      .filter(t => t.name)
+      .sort((a, b) => a.order - b.order);
+    S.toolsLive = true;
+  }
+  const toolFields = t => ({ Title:t.name, Url:t.url, ToolKey:t.id, SortOrder:t.order });
+
+  async function loadPeople(){
+    S.people = (await readAll(CFG.list, "Title,DisplayName,Tools"))
+      .map(it => ({ itemId:it.id, email:String(it.fields.Title || "").trim().toLowerCase(),
+                    name:it.fields.DisplayName || "", tools:splitIds(it.fields.Tools) }))
+      .filter(p => p.email)
+      .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
   }
 
   /* ── screens ── */
@@ -401,11 +457,13 @@
     $("signInBtn").onclick = () => msalApp.loginRedirect({ scopes:CFG.scopes });
   }
 
+  // ids: the tool keys to show, or null for every tool
   function renderCards(ids){
     grid.innerHTML = "";
-    const list = ids ? TOOLS.filter(t => ids.includes(t.id)) : TOOLS;
+    const list = TOOLS.filter(t => okUrl(t.url) && (!ids || ids.includes(t.id)));
     if (!list.length){
-      showMsg('<h2>No tools assigned yet</h2><p>Ask Saul to give you access to the tools you need.</p>');
+      showMsg(S.admin ? '<h2>No tools yet</h2><p>Add one under Manage access → Tools.</p>'
+                      : '<h2>No tools assigned yet</h2><p>Ask Saul to give you access to the tools you need.</p>');
       return;
     }
     hideMsg();
@@ -414,10 +472,10 @@
       a.href = t.url; a.target = '_blank'; a.rel = 'noopener';
       a.className = 'card';
       a.innerHTML = `
-        <div class="mono">${t.name.trim().charAt(0).toUpperCase()}</div>
+        <div class="mono">${esc(t.name.charAt(0).toUpperCase())}</div>
         <div class="label">
           <div class="text">
-            <div class="name">${t.name}</div>
+            <div class="name">${esc(t.name)}</div>
             <div class="click here">Open</div>
           </div>
           <div class="chev">›</div>
@@ -430,11 +488,11 @@
   /* ── manage access (admin only) ── */
   function renderAdmin(){
     const tbl = $("accessTbl");
-    let h = '<thead><tr><th>Person</th>' + TOOLS.map(t => '<th>' + esc(t.name.trim()) + '</th>').join("") + '<th></th></tr></thead><tbody>';
+    let h = '<thead><tr><th>Person</th>' + TOOLS.map(t => '<th>' + esc(t.name) + '</th>').join("") + '<th></th></tr></thead><tbody>';
     S.people.forEach((p, i) => {
       h += '<tr class="' + (S.dirty.has(p) ? "dirty" : "") + '"><td><div class="pname">' + esc(p.name || p.email) + '</div>' +
         (p.name ? '<div class="pmail">' + esc(p.email) + '</div>' : '') + '</td>' +
-        TOOLS.map(t => '<td><input type="checkbox" data-p="' + i + '" data-t="' + t.id + '"' + (p.tools.includes(t.id) ? " checked" : "") + '></td>').join("") +
+        TOOLS.map(t => '<td><input type="checkbox" data-p="' + i + '" data-t="' + esc(t.id) + '"' + (p.tools.includes(t.id) ? " checked" : "") + '></td>').join("") +
         '<td><button class="x" title="Remove person" data-del="' + i + '">&times;</button></td></tr>';
     });
     if (!S.people.length) h += '<tr><td colspan="' + (TOOLS.length + 2) + '" style="color:var(--ink-faint)">Nobody yet. Add someone below, or they appear here after signing in.</td></tr>';
@@ -467,19 +525,94 @@
   $("saveBtn").onclick = async () => {
     const btn = $("saveBtn"); btn.disabled = true; $("saveMsg").textContent = "Saving…";
     try {
-      for (const p of S.removed) await gf(itemsPath() + "/" + p.itemId, { method:"DELETE" });
+      for (const p of S.removed) await gf(itemsPath(CFG.list) + "/" + p.itemId, { method:"DELETE" });
       S.removed = [];
       for (const p of Array.from(S.dirty)){
+        // only keys of tools that still exist are saved
         const fields = { Title:p.email, DisplayName:p.name, Tools:TOOLS.filter(t => p.tools.includes(t.id)).map(t => t.id).join(", ") };
-        if (p.itemId) await gf(itemsPath() + "/" + p.itemId + "/fields", { method:"PATCH", body:JSON.stringify(fields) });
-        else p.itemId = (await gf(itemsPath(), { method:"POST", body:JSON.stringify({ fields }) })).id;
+        if (p.itemId) await gf(itemsPath(CFG.list) + "/" + p.itemId + "/fields", { method:"PATCH", body:JSON.stringify(fields) });
+        else p.itemId = (await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields }) })).id;
         S.dirty.delete(p);
       }
       $("saveMsg").textContent = "Saved.";
     } catch(e){ $("saveMsg").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
     renderAdmin();
   };
-  $("manageBtn").onclick = () => { $("admin").classList.remove("hidden"); renderAdmin(); $("admin").scrollIntoView({ behavior:"smooth" }); };
+
+  /* ── tools (admin only) ── */
+  const toolsPending = () => S.tDirty.size + S.tRemoved.length + TOOLS.filter((t, i) => t.order !== i).length;
+
+  function renderToolsAdmin(){
+    let h = '<thead><tr><th>Order</th><th>Name</th><th>Link</th><th></th></tr></thead><tbody>';
+    TOOLS.forEach((t, i) => {
+      h += '<tr class="' + (S.tDirty.has(t) || t.order !== i ? "dirty" : "") + '">' +
+        '<td class="ord"><button class="x" title="Move up" data-up="' + i + '"' + (i ? '' : ' disabled') + '>&uarr;</button>' +
+        '<button class="x" title="Move down" data-down="' + i + '"' + (i < TOOLS.length - 1 ? '' : ' disabled') + '>&darr;</button></td>' +
+        '<td><input class="tin" data-i="' + i + '" data-f="name" value="' + esc(t.name) + '"></td>' +
+        '<td><input class="tin turl" data-i="' + i + '" data-f="url" value="' + esc(t.url) + '"></td>' +
+        '<td><button class="x" title="Remove tool" data-tdel="' + i + '">&times;</button></td></tr>';
+    });
+    if (!TOOLS.length) h += '<tr><td colspan="4" style="color:var(--ink-faint)">No tools. Add one below.</td></tr>';
+    $("toolsTbl").innerHTML = h + '</tbody>';
+    $("saveToolsBtn").disabled = !S.toolsLive || !toolsPending();
+    if (!S.toolsLive) $("toolsMsg").textContent = "Tools can be edited once the Tool_Hub_Tools list has loaded.";
+  }
+
+  $("toolsTbl").addEventListener("input", e => {
+    const c = e.target; if (c.dataset.i == null) return;
+    const t = TOOLS[+c.dataset.i];
+    t[c.dataset.f] = c.value.trim();
+    S.tDirty.add(t); c.closest("tr").classList.add("dirty");
+    $("toolsMsg").textContent = ""; $("saveToolsBtn").disabled = !S.toolsLive;
+  });
+  $("toolsTbl").addEventListener("click", e => {
+    const d = e.target.dataset;
+    if (d.up != null || d.down != null){
+      const i = +(d.up != null ? d.up : d.down), j = d.up != null ? i - 1 : i + 1;
+      [TOOLS[i], TOOLS[j]] = [TOOLS[j], TOOLS[i]];
+    } else if (d.tdel != null){
+      const t = TOOLS[+d.tdel];
+      if (!confirm("Remove " + (t.name || "this tool") + " from the hub for everyone?")) return;
+      TOOLS.splice(+d.tdel, 1); S.tDirty.delete(t);
+      if (t.itemId) S.tRemoved.push(t);
+    } else return;
+    $("toolsMsg").textContent = ""; renderToolsAdmin();
+  });
+  $("addToolBtn").onclick = () => {
+    const name = $("newToolName").value.trim(), url = $("newToolUrl").value.trim();
+    if (!name){ $("toolsMsg").textContent = "Enter a tool name."; return; }
+    if (!okUrl(url)){ $("toolsMsg").textContent = "Enter the full link, starting with https://"; return; }
+    let id = slug(name) || "tool", n = 2;
+    while (TOOLS.some(t => t.id === id) || S.tRemoved.some(t => t.id === id)) id = slug(name) + "-" + n++;
+    const t = { itemId:null, name, url, id, order:-1 };
+    TOOLS.push(t); S.tDirty.add(t);
+    $("newToolName").value = $("newToolUrl").value = "";
+    $("toolsMsg").textContent = "Added. Save, then tick who can see it above."; renderToolsAdmin();
+  };
+  $("saveToolsBtn").onclick = async () => {
+    const bad = TOOLS.find(t => !t.name || !okUrl(t.url));
+    if (bad){ $("toolsMsg").innerHTML = '<span class="err">Every tool needs a name and a full link starting with https://</span>'; return; }
+    $("saveToolsBtn").disabled = true; $("toolsMsg").textContent = "Saving…";
+    try {
+      for (const t of S.tRemoved) await gf(itemsPath(CFG.toolList) + "/" + t.itemId, { method:"DELETE" });
+      S.tRemoved = [];
+      for (let i = 0; i < TOOLS.length; i++){
+        const t = TOOLS[i];
+        if (!S.tDirty.has(t) && t.order === i) continue;
+        t.order = i;
+        if (t.itemId) await gf(itemsPath(CFG.toolList) + "/" + t.itemId + "/fields", { method:"PATCH", body:JSON.stringify(toolFields(t)) });
+        else t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:toolFields(t) }) })).id;
+        S.tDirty.delete(t);
+      }
+      $("toolsMsg").textContent = "Saved. The hub is updated for everyone.";
+    } catch(e){ $("toolsMsg").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+    renderToolsAdmin(); renderAdmin(); renderCards(null);
+  };
+
+  $("manageBtn").onclick = () => {
+    $("admin").classList.remove("hidden"); renderAdmin(); renderToolsAdmin();
+    $("admin").scrollIntoView({ behavior:"smooth" });
+  };
   $("closeAdmin").onclick = () => $("admin").classList.add("hidden");
   $("signOutBtn").onclick = () => DEMO ? location.reload() : msalApp.logoutRedirect({ account:S.acct });
 
@@ -496,13 +629,16 @@
     else showMsg('<p>Loading your tools…</p>');
     try {
       S.siteId = (await gf("/sites/" + CFG.site + "?$select=id")).id;
-      if (!(await ensureList())){ renderCards([]); return; }
+      try { await loadTools(); }
+      catch(e){ if (S.admin) showMsg('<p class="err">Could not load the tool list, showing the built-in one. ' + esc(e.message) + '</p>'); }
+      if (S.admin) renderCards(null);
+      if (!(await ensureList(CFG.list, ACCESS_COLS))){ renderCards([]); return; }
       await loadPeople();
       if (!S.admin && !S.people.some(p => p.email === S.email)){
         // first visit: add a row so they show up on the Manage access screen
         const me = { itemId:null, email:S.email, name:S.name, tools:[] };
         try {
-          me.itemId = (await gf(itemsPath(), { method:"POST", body:JSON.stringify({ fields:{ Title:S.email, DisplayName:S.name, Tools:"" } }) })).id;
+          me.itemId = (await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields:{ Title:S.email, DisplayName:S.name, Tools:"" } }) })).id;
           S.people.push(me);
         } catch(e){}
       }
@@ -526,19 +662,27 @@
     if (acct) enter(acct); else showGate(err);
   }
 
-  /* local testing only: open http://localhost:<port>/?demo=admin or ?demo=user */
-  const demoRows = [
-    { id:"1", fields:{ Title:"pat@metro1solutions.com", DisplayName:"Pat Demo", Tools:"order-tracker, dev-tracker" } },
-    { id:"2", fields:{ Title:"lee@metro1solutions.com", DisplayName:"Lee Demo", Tools:"" } }
-  ];
+  /* local testing only: open http://localhost:<port>/?demo=admin or ?demo=user
+     (the tool list starts missing so the first admin visit copies it in) */
+  const demoLists = {
+    Tool_Hub_Access:[
+      { id:"1", fields:{ Title:"pat@metro1solutions.com", DisplayName:"Pat Demo", Tools:"order-tracker, dev-tracker" } },
+      { id:"2", fields:{ Title:"lee@metro1solutions.com", DisplayName:"Lee Demo", Tools:"" } }
+    ]
+  };
+  let demoSeq = 100;
   async function demoGraph(path, opts){
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 60));
     const m = opts.method || "GET";
     if (/\/sites\/[^/]+\?/.test(path)) return { id:"demo-site" };
-    if (/\/items\?/.test(path)) return { value:JSON.parse(JSON.stringify(demoRows)) };
-    if (m === "POST" && /\/items$/.test(path)){ const id = String(Date.now()); demoRows.push({ id, fields:JSON.parse(opts.body).fields }); return { id }; }
-    if (m === "PATCH"){ const id = path.split("/").slice(-2)[0]; Object.assign(demoRows.find(r => r.id === id).fields, JSON.parse(opts.body)); return {}; }
-    if (m === "DELETE"){ const id = path.split("/").pop(); demoRows.splice(demoRows.findIndex(r => r.id === id), 1); return null; }
+    if (m === "POST" && /\/lists$/.test(path)){ const n = JSON.parse(opts.body).displayName; demoLists[n] = []; return { id:n }; }
+    const lm = path.match(/\/lists\/([^/?]+)(.*)$/), rows = demoLists[lm[1]], rest = lm[2], id = rest.split("/")[2];
+    if (!rows){ const e = new Error("SharePoint 404: list not found"); e.status = 404; throw e; }
+    if (/^\?/.test(rest)) return { id:lm[1] };
+    if (/^\/items\?/.test(rest)) return { value:JSON.parse(JSON.stringify(rows)) };
+    if (m === "POST"){ const nid = String(++demoSeq); rows.push({ id:nid, fields:JSON.parse(opts.body).fields }); return { id:nid }; }
+    if (m === "PATCH"){ Object.assign(rows.find(r => r.id === id).fields, JSON.parse(opts.body)); return {}; }
+    if (m === "DELETE"){ rows.splice(rows.findIndex(r => r.id === id), 1); return null; }
     return {};
   }
 
