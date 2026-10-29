@@ -185,7 +185,8 @@
   td .pname{font-weight:600}
   td .pmail{font-size:12px;color:var(--ink-faint)}
   td input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
-  tr.dirty td{background:rgba(0,113,227,.06)}
+  tr.failed td{background:rgba(192,54,44,.07)}
+  .muted{color:var(--ink-faint)}
   .x{border:0;background:none;color:var(--ink-faint);font-size:16px;cursor:pointer;padding:2px 6px}
   .x:hover{color:#c0362c}
   .addrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
@@ -194,8 +195,12 @@
     border:1px solid var(--hairline);background:rgba(255,255,255,.8);min-width:0;flex:1 1 180px;
   }
   .addrow .btn{margin-top:0}
-  .savebar{display:flex;align-items:center;gap:12px;margin-top:16px;font-size:13px;color:var(--ink-soft)}
-  .savebar .btn{margin-top:0}
+  .addrow input:disabled{opacity:.5}
+  .head-acts{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .state{font-size:13px;color:var(--ink-soft)}
+  .state:empty{display:none}
+  .state .btn{padding:5px 12px;margin-left:6px}
+  .panel .note{font-size:13px;margin-top:10px;min-height:20px}
   table.tools th,table.tools td{text-align:left}
   table.tools th:first-child,table.tools td:first-child{min-width:0;width:1%}
   table.tools .tin{
@@ -203,6 +208,7 @@
     border:1px solid var(--hairline);background:rgba(255,255,255,.8);
   }
   table.tools .turl{min-width:260px}
+  table.tools .tin.bad{border-color:#c0362c}
   .x:disabled{opacity:.3;cursor:default}
 
   /* accessibility: drop transparency if the user asks for it */
@@ -240,9 +246,12 @@
     <div class="admin-head">
       <div>
         <h2>Manage access</h2>
-        <p>Tick the tools each person sees. People appear here after they sign in once, or add them by email.</p>
+        <p>Tick the tools each person sees. Changes save automatically. People appear here after they sign in once, or add them by email.</p>
       </div>
-      <button class="btn" id="closeAdmin">Done</button>
+      <div class="head-acts">
+        <span class="state"></span>
+        <button class="btn" id="closeAdmin">Done</button>
+      </div>
     </div>
     <div class="tblwrap"><table id="accessTbl"></table></div>
     <div class="addrow">
@@ -250,25 +259,24 @@
       <input id="addName" type="text" placeholder="Name (optional)" autocomplete="off">
       <button class="btn" id="addBtn">Add person</button>
     </div>
-    <div class="savebar">
-      <button class="btn primary" id="saveBtn" disabled>Save changes</button>
-      <span id="saveMsg"></span>
-    </div>
+    <p class="note" id="peopleNote"></p>
   </section>
 
   <section class="panel admin">
-    <h2>Tools</h2>
-    <p>Add, rename, reorder or remove tools. A new tool is hidden from everyone until you tick it above.</p>
+    <div class="admin-head">
+      <div>
+        <h2>Tools</h2>
+        <p>Add, rename, reorder or remove tools. Changes save automatically. A new tool is hidden from everyone until you tick it above.</p>
+      </div>
+      <div class="head-acts"><span class="state"></span></div>
+    </div>
     <div class="tblwrap"><table id="toolsTbl" class="tools"></table></div>
     <div class="addrow">
       <input id="newToolName" type="text" placeholder="Tool name" autocomplete="off">
       <input id="newToolUrl" type="url" placeholder="https://…" autocomplete="off">
       <button class="btn" id="addToolBtn">Add tool</button>
     </div>
-    <div class="savebar">
-      <button class="btn primary" id="saveToolsBtn" disabled>Save tools</button>
-      <span id="toolsMsg"></span>
-    </div>
+    <p class="note" id="toolsNote"></p>
   </section>
   </div>
 
@@ -343,7 +351,7 @@
     manageScopes : ["Sites.Manage.All"],          // only asked for when creating a list
     admins   : ["saul@metro1solutions.com"]
   };
-  const ACCESS_COLS = [ { name:"DisplayName", text:{} }, { name:"Tools", text:{ allowMultipleLines:true } } ];
+  const ACCESS_COLS = [ { name:"DisplayName", text:{} }, { name:"Tools", text:{ allowMultipleLines:true, textType:"plain" } } ];
   const TOOL_COLS = [ { name:"Url", text:{} }, { name:"ToolKey", text:{} }, { name:"SortOrder", number:{} } ];
   const G = "https://graph.microsoft.com/v1.0";
   const DEMO = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get("demo");
@@ -351,15 +359,19 @@
   const $ = id => document.getElementById(id);
   const grid = $('grid');
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
-  const splitIds = v => String(v || "").split(/[;,\s]+/).filter(Boolean);
+  const lower = s => String(s || "").trim().toLowerCase();
+  // tool keys stored on a person's row (ignores HTML a rich-text column might add)
   const slug = s => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const splitIds = v => String(v || "").replace(/<[^>]*>|&[#a-z0-9]+;/gi, " ").split(/[;,\s]+/).map(slug).filter(Boolean);
   const okUrl = u => /^https?:\/\/\S+$/i.test(String(u || "").trim());
+  const urlProblem = u => !okUrl(u) ? "Enter the full link, starting with https://" : u.length > 255 ? "That link is too long (255 characters at most)." : "";
 
   // a tool's key is fixed when it is added, so renaming it keeps who can see it
   TOOLS.forEach((t, i) => { t.id = slug(t.name); t.order = i; });
 
-  const S = { acct:null, email:"", name:"", admin:false, siteId:null, lists:{}, toolsLive:false,
-              people:[], dirty:new Set(), removed:[], tDirty:new Set(), tRemoved:[] };
+  const S = { acct:null, ids:[], email:"", name:"", admin:false, siteId:null, lists:{},
+              toolsLive:false, toolsErr:"", accessLive:false, loading:false, loadErr:"", ready:Promise.resolve(),
+              people:[], queued:new Set(), failed:new Map(), saved:false, redirecting:false, writing:false, loggingOut:false };
 
   /* ── msal ── */
   const msalApp = (!DEMO && window.msal) ? new msal.PublicClientApplication({
@@ -368,10 +380,23 @@
     cache:{ cacheLocation:"localStorage" }
   }) : null;
 
+  const needsSignIn = e => (window.msal && msal.InteractionRequiredAuthError && e instanceof msal.InteractionRequiredAuthError) ||
+    /interaction_required|login_required|consent_required|no_tokens_found|monitor_window_timeout/.test(e && e.errorCode || "");
+
   async function getToken(scopes){
     scopes = scopes || CFG.scopes;
     try { return (await msalApp.acquireTokenSilent({ scopes, account:S.acct })).accessToken; }
-    catch(e){ msalApp.acquireTokenRedirect({ scopes }); return new Promise(() => {}); }
+    catch(e){
+      if (!needsSignIn(e)) throw e;                    // e.g. offline: the save fails and offers Retry
+      if (S.writing){                                  // keep the page and its unsaved changes; "Sign in again" uses a popup
+        const err = new Error("Your sign-in has expired."); err.signIn = true; throw err;
+      }
+      // loading only: go to Microsoft sign-in and come back; if that can't start, fail instead of hanging
+      S.redirecting = true;
+      try { await msalApp.acquireTokenRedirect({ scopes, account:S.acct }); }
+      catch(err){ S.redirecting = false; throw err; }
+      return new Promise(() => {});
+    }
   }
 
   async function gf(path, opts){
@@ -393,6 +418,7 @@
     }
     return res.status === 204 ? null : res.json();
   }
+  const gone = e => { if (e.status !== 404) throw e; };   // deleting a row that is already gone is fine
 
   /* ── lists ── */
   const itemsPath = name => "/sites/" + S.siteId + "/lists/" + S.lists[name] + "/items";
@@ -421,28 +447,145 @@
   }
 
   async function loadTools(){
+    S.toolsLive = false;
     const st = await ensureList(CFG.toolList, TOOL_COLS);
     if (!st) return;                                     // not set up yet: keep the starting list
     if (st === "created"){
       for (const t of TOOLS){
-        t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:toolFields(t) }) })).id;
+        t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:{
+          Title:t.name, Url:t.url, ToolKey:t.id, SortOrder:t.order } }) })).id;
       }
     }
     TOOLS = (await readAll(CFG.toolList, "Title,Url,ToolKey,SortOrder"))
       .map(it => ({ itemId:it.id, name:String(it.fields.Title || "").trim(), url:String(it.fields.Url || "").trim(),
-                    id:it.fields.ToolKey || slug(it.fields.Title), order:+it.fields.SortOrder || 0 }))
+                    id:slug(it.fields.ToolKey) || slug(it.fields.Title), order:+it.fields.SortOrder || 0 }))
       .filter(t => t.name)
       .sort((a, b) => a.order - b.order);
     S.toolsLive = true;
   }
-  const toolFields = t => ({ Title:t.name, Url:t.url, ToolKey:t.id, SortOrder:t.order });
 
+  // one entry per email; if the list holds the same person twice, their ticks are combined
   async function loadPeople(){
-    S.people = (await readAll(CFG.list, "Title,DisplayName,Tools"))
-      .map(it => ({ itemId:it.id, email:String(it.fields.Title || "").trim().toLowerCase(),
-                    name:it.fields.DisplayName || "", tools:splitIds(it.fields.Tools) }))
-      .filter(p => p.email)
-      .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+    const by = new Map();
+    (await readAll(CFG.list, "Title,DisplayName,Tools")).forEach(it => {
+      const email = lower(it.fields.Title);
+      if (!email) return;
+      const tools = splitIds(it.fields.Tools), p = by.get(email);
+      if (!p) return by.set(email, { itemId:it.id, extra:[], email, name:it.fields.DisplayName || "", tools });
+      p.extra.push(it.id);
+      tools.forEach(k => { if (!p.tools.includes(k)) p.tools.push(k); });
+      p.name = p.name || it.fields.DisplayName || "";
+    });
+    return Array.from(by.values()).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+  }
+
+  async function loadAll(){
+    S.loading = true; S.loadErr = ""; S.toolsErr = "";
+    renderAdminAll();
+    try {
+      if (!S.siteId) S.siteId = (await gf("/sites/" + CFG.site + "?$select=id")).id;
+      try { await loadTools(); } catch(e){ S.toolsErr = e.message; }
+      S.accessLive = !!(await ensureList(CFG.list, ACCESS_COLS));
+      S.people = S.accessLive ? await loadPeople() : [];
+    } catch(e){ S.loadErr = e.message; }
+    S.loading = false;
+    renderAdminAll();
+  }
+
+  /* ── saving: every change is written straight away, one request at a time ── */
+  let chain = Promise.resolve(), pending = 0;
+
+  // key: the person or tool being written; a write already waiting for it picks up the latest values
+  function queueWrite(fn, key){
+    if (key){ if (S.queued.has(key)) return; S.queued.add(key); }
+    pending++; showSaveState();
+    chain = chain.then(async () => {
+      if (key) S.queued.delete(key);
+      S.writing = true;
+      try { await fn(); if (key) S.failed.delete(key); S.saved = true; }
+      catch(e){                                      // a person or tool removed meanwhile is not worth a Retry
+        if (!(key && key.removed)) S.failed.set(key || {}, { fn, msg:e.message || String(e), keyed:!!key, signIn:!!e.signIn });
+      }
+      S.writing = false;
+    }).then(() => { pending--; showSaveState(); markRows(); });
+  }
+
+  function retryFailed(){
+    const list = Array.from(S.failed.entries()).filter(([k]) => !k.removed);
+    S.failed.clear();
+    list.forEach(([k, v]) => queueWrite(v.fn, v.keyed ? k : null));
+  }
+
+  // the sign-in ran out while saving: a popup keeps this page and its unsaved changes
+  async function signInAgain(){
+    if (!msalApp) return retryFailed();
+    try {
+      const res = await msalApp.acquireTokenPopup({ scopes:CFG.scopes, account:S.acct });
+      if (res && res.account) msalApp.setActiveAccount(res.account);
+      retryFailed();
+    } catch(e){
+      const last = Array.from(S.failed.values()).pop();
+      if (last) last.msg = "Sign-in did not finish. Allow pop-ups for this page and try again, or reload the page.";
+      showSaveState();
+    }
+  }
+
+  function showSaveState(){
+    let h = "";
+    if (pending) h = "Saving…";
+    else if (S.failed.size){
+      const all = Array.from(S.failed.values()), last = all[all.length - 1];
+      h = '<span class="err">Not saved. ' + esc(last.msg) + '</span> ' + (all.some(f => f.signIn)
+        ? '<button class="btn signin">Sign in again</button>' : '<button class="btn retry">Retry</button>');
+    }
+    else if (S.saved) h = "All changes saved";
+    document.querySelectorAll(".state").forEach(el => { el.innerHTML = h; });
+  }
+
+  window.addEventListener("beforeunload", e => {
+    if (S.redirecting || (!pending && !S.failed.size)) return;
+    e.preventDefault(); e.returnValue = "";
+  });
+  // back from the Microsoft sign-in page without signing in: start over instead of waiting forever
+  window.addEventListener("pageshow", e => { if (e.persisted && S.redirecting) location.reload(); });
+
+  async function savePerson(p){
+    if (p.removed) return;
+    const order = k => { const i = TOOLS.findIndex(t => t.id === k); return i < 0 ? 1e9 : i; };
+    const fields = { Title:p.email, DisplayName:p.name, Tools:Array.from(new Set(p.tools)).sort((a, b) => order(a) - order(b)).join(", ") };
+    if (p.itemId){
+      try { await gf(itemsPath(CFG.list) + "/" + p.itemId + "/fields", { method:"PATCH", body:JSON.stringify(fields) }); }
+      catch(e){ gone(e); p.itemId = null; }
+    }
+    if (p.removed) return;                           // removed while that request ran: don't bring the row back
+    if (!p.itemId) p.itemId = (await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields }) })).id;
+    while (p.extra.length){                          // duplicate rows: their ticks are on this row now
+      await gf(itemsPath(CFG.list) + "/" + p.extra[0], { method:"DELETE" }).catch(gone);
+      p.extra.shift();
+    }
+  }
+
+  async function saveTool(t){
+    if (t.removed) return;
+    if (t.itemId){
+      // ToolKey goes along so a row that never had one keeps its key through a rename
+      try { await gf(itemsPath(CFG.toolList) + "/" + t.itemId + "/fields", { method:"PATCH", body:JSON.stringify({ Title:t.name, Url:t.url, ToolKey:t.id }) }); return; }
+      catch(e){ gone(e); t.itemId = null; }
+      if (t.removed) return;
+    }
+    t.order = TOOLS.indexOf(t);
+    t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:{
+      Title:t.name, Url:t.url, ToolKey:t.id, SortOrder:t.order } }) })).id;
+    queueWrite(saveOrder, "order");                  // it may have been moved before it had a row
+  }
+
+  async function saveOrder(){
+    for (let i = 0; i < TOOLS.length; i++){
+      const t = TOOLS[i];
+      if (t.order === i || !t.itemId) continue;
+      await gf(itemsPath(CFG.toolList) + "/" + t.itemId + "/fields", { method:"PATCH", body:JSON.stringify({ SortOrder:i }) });
+      t.order = i;
+    }
   }
 
   /* ── screens ── */
@@ -463,7 +606,7 @@
     const list = TOOLS.filter(t => okUrl(t.url) && (!ids || ids.includes(t.id)));
     if (!list.length){
       showMsg(S.admin ? '<h2>No tools yet</h2><p>Add one under Manage access → Tools.</p>'
-                      : '<h2>No tools assigned yet</h2><p>Ask Saul to give you access to the tools you need.</p>');
+                      : '<h2>No tools assigned yet</h2><p>Ask Saul to give you access to the tools you need. You are signed in as <b>' + esc(S.email) + '</b>.</p>');
       return;
     }
     hideMsg();
@@ -486,180 +629,250 @@
   }
 
   /* ── manage access (admin only) ── */
+  function renderAdminAll(){ renderAdmin(); renderToolsAdmin(); showSaveState(); }
+
   function renderAdmin(){
-    const tbl = $("accessTbl");
+    const busy = S.loading || !!S.loadErr || !S.accessLive;
+    ["addEmail", "addName", "addBtn"].forEach(id => { $(id).disabled = busy; });
+    const cols = TOOLS.length + 2;
     let h = '<thead><tr><th>Person</th>' + TOOLS.map(t => '<th>' + esc(t.name) + '</th>').join("") + '<th></th></tr></thead><tbody>';
-    S.people.forEach((p, i) => {
-      h += '<tr class="' + (S.dirty.has(p) ? "dirty" : "") + '"><td><div class="pname">' + esc(p.name || p.email) + '</div>' +
+    if (S.loading) h += '<tr><td colspan="' + cols + '" class="muted">Loading people…</td></tr>';
+    else if (S.loadErr) h += '<tr><td colspan="' + cols + '"><span class="err">Could not load the access list. ' + esc(S.loadErr) + '</span></td></tr>';
+    else if (!S.people.length) h += '<tr><td colspan="' + cols + '" class="muted">Nobody yet. Add someone below, or they appear here after signing in.</td></tr>';
+    else S.people.forEach((p, i) => {
+      h += '<tr data-i="' + i + '"' + (S.failed.has(p) ? ' class="failed"' : '') + '><td><div class="pname">' + esc(p.name || p.email) + '</div>' +
         (p.name ? '<div class="pmail">' + esc(p.email) + '</div>' : '') + '</td>' +
         TOOLS.map(t => '<td><input type="checkbox" data-p="' + i + '" data-t="' + esc(t.id) + '"' + (p.tools.includes(t.id) ? " checked" : "") + '></td>').join("") +
         '<td><button class="x" title="Remove person" data-del="' + i + '">&times;</button></td></tr>';
     });
-    if (!S.people.length) h += '<tr><td colspan="' + (TOOLS.length + 2) + '" style="color:var(--ink-faint)">Nobody yet. Add someone below, or they appear here after signing in.</td></tr>';
-    tbl.innerHTML = h + '</tbody>';
-    $("saveBtn").disabled = !S.dirty.size && !S.removed.length;
+    $("accessTbl").innerHTML = h + '</tbody>';
+  }
+
+  function markRows(){
+    document.querySelectorAll("#accessTbl tr[data-i]").forEach(tr => tr.classList.toggle("failed", S.failed.has(S.people[+tr.dataset.i])));
+    document.querySelectorAll("#toolsTbl tr[data-i]").forEach(tr => tr.classList.toggle("failed", S.failed.has(TOOLS[+tr.dataset.i])));
   }
 
   $("accessTbl").addEventListener("change", e => {
     const c = e.target; if (c.dataset.p == null) return;
     const p = S.people[+c.dataset.p];
     p.tools = c.checked ? p.tools.concat(c.dataset.t) : p.tools.filter(x => x !== c.dataset.t);
-    S.dirty.add(p); $("saveMsg").textContent = ""; renderAdmin();
+    queueWrite(() => savePerson(p), p);
   });
   $("accessTbl").addEventListener("click", e => {
     const i = e.target.dataset.del; if (i == null) return;
     const p = S.people[+i];
     if (!confirm("Remove " + (p.name || p.email) + "? They will see no tools.")) return;
-    S.people.splice(+i, 1); S.dirty.delete(p);
-    if (p.itemId) S.removed.push(p);
-    $("saveMsg").textContent = ""; renderAdmin();
-  });
-  $("addBtn").onclick = () => {
-    const email = $("addEmail").value.trim().toLowerCase(), name = $("addName").value.trim();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ $("saveMsg").textContent = "Enter a valid email."; return; }
-    if (S.people.some(p => p.email === email)){ $("saveMsg").textContent = email + " is already in the list."; return; }
-    const p = { itemId:null, email, name, tools:[] };
-    S.people.push(p); S.dirty.add(p);
-    $("addEmail").value = $("addName").value = ""; $("saveMsg").textContent = ""; renderAdmin();
-  };
-  $("saveBtn").onclick = async () => {
-    const btn = $("saveBtn"); btn.disabled = true; $("saveMsg").textContent = "Saving…";
-    try {
-      for (const p of S.removed) await gf(itemsPath(CFG.list) + "/" + p.itemId, { method:"DELETE" });
-      S.removed = [];
-      for (const p of Array.from(S.dirty)){
-        // only keys of tools that still exist are saved
-        const fields = { Title:p.email, DisplayName:p.name, Tools:TOOLS.filter(t => p.tools.includes(t.id)).map(t => t.id).join(", ") };
-        if (p.itemId) await gf(itemsPath(CFG.list) + "/" + p.itemId + "/fields", { method:"PATCH", body:JSON.stringify(fields) });
-        else p.itemId = (await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields }) })).id;
-        S.dirty.delete(p);
-      }
-      $("saveMsg").textContent = "Saved.";
-    } catch(e){ $("saveMsg").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+    p.removed = true;
+    S.people.splice(+i, 1); S.failed.delete(p);
+    $("peopleNote").textContent = "";
     renderAdmin();
-  };
+    queueWrite(async () => {
+      for (const id of [p.itemId].concat(p.extra).filter(Boolean)) await gf(itemsPath(CFG.list) + "/" + id, { method:"DELETE" }).catch(gone);
+    });
+  });
+  // "a@x.com", "Name <a@x.com>", "Last, First <a@x.com>", or several addresses
+  // (separated by ; as Outlook copies them, or by spaces, commas or lines as a pasted column)
+  function parsePeople(text){
+    const re = /[^\s<>"'():;,@][^\s<>"():;,@]*@[^\s<>"'():;,@]+\.[a-z]{2,}/gi, out = [];
+    String(text || "").split(/[;\r\n]+/).forEach(part => {
+      const found = part.match(re) || [];
+      // a name only when this part holds a single address
+      const name = found.length !== 1 ? "" : part.replace(found[0], " ").replace(/mailto:|[<>()]/gi, " ").replace(/^[\s"',]+|[\s"',]+$/g, "").replace(/\s+/g, " ");
+      found.forEach(a => { const email = lower(a); if (!out.some(f => f.email === email)) out.push({ email, name:/@/.test(name) ? "" : name }); });
+    });
+    return out;
+  }
+  function addPerson(){
+    if (S.loading || !S.accessLive){
+      $("peopleNote").textContent = S.loading ? "Still loading, try again in a moment." : "The access list did not load. Click Manage access to try again, or reload the page.";
+      return false;
+    }
+    const found = parsePeople($("addEmail").value), typed = $("addName").value.trim();
+    if (!found.length){ $("peopleNote").textContent = "Enter a valid email."; return false; }
+    if (found.length === 1 && typed) found[0].name = typed;
+    const added = [], had = [];
+    found.forEach(f => {
+      if (S.people.some(p => p.email === f.email)) return had.push(f.email);
+      const p = { itemId:null, extra:[], email:f.email, name:f.name, tools:[] };
+      S.people.push(p); added.push(p);
+      queueWrite(() => savePerson(p), p);
+    });
+    $("addEmail").value = $("addName").value = "";
+    $("peopleNote").textContent = [
+      added.length ? "Added " + added.map(p => p.name || p.email).join(", ") + ". Tick the tools they should see." : "",
+      had.length ? had.join(", ") + (had.length > 1 ? " are" : " is") + " already in the list." : ""
+    ].filter(Boolean).join(" ");
+    renderAdmin();
+    return true;
+  }
+  $("addBtn").onclick = addPerson;
+  ["addEmail", "addName"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") addPerson(); }));
 
   /* ── tools (admin only) ── */
-  const toolsPending = () => S.tDirty.size + S.tRemoved.length + TOOLS.filter((t, i) => t.order !== i).length;
-
   function renderToolsAdmin(){
+    const busy = S.loading || !!S.loadErr || !S.toolsLive;
+    ["newToolName", "newToolUrl", "addToolBtn"].forEach(id => { $(id).disabled = busy; });
     let h = '<thead><tr><th>Order</th><th>Name</th><th>Link</th><th></th></tr></thead><tbody>';
-    TOOLS.forEach((t, i) => {
-      h += '<tr class="' + (S.tDirty.has(t) || t.order !== i ? "dirty" : "") + '">' +
-        '<td class="ord"><button class="x" title="Move up" data-up="' + i + '"' + (i ? '' : ' disabled') + '>&uarr;</button>' +
-        '<button class="x" title="Move down" data-down="' + i + '"' + (i < TOOLS.length - 1 ? '' : ' disabled') + '>&darr;</button></td>' +
-        '<td><input class="tin" data-i="' + i + '" data-f="name" value="' + esc(t.name) + '"></td>' +
-        '<td><input class="tin turl" data-i="' + i + '" data-f="url" value="' + esc(t.url) + '"></td>' +
-        '<td><button class="x" title="Remove tool" data-tdel="' + i + '">&times;</button></td></tr>';
-    });
-    if (!TOOLS.length) h += '<tr><td colspan="4" style="color:var(--ink-faint)">No tools. Add one below.</td></tr>';
+    if (S.loading) h += '<tr><td colspan="4" class="muted">Loading tools…</td></tr>';
+    else if (!S.toolsLive) h += '<tr><td colspan="4"><span class="err">' +
+      esc(S.loadErr || (S.toolsErr ? "Could not load the tool list. " + S.toolsErr : "The tool list is not set up yet.")) + '</span></td></tr>';
+    else {
+      TOOLS.forEach((t, i) => {
+        h += '<tr data-i="' + i + '"' + (S.failed.has(t) ? ' class="failed"' : '') + '>' +
+          '<td class="ord"><button class="x" title="Move up" data-up="' + i + '"' + (i ? '' : ' disabled') + '>&uarr;</button>' +
+          '<button class="x" title="Move down" data-down="' + i + '"' + (i < TOOLS.length - 1 ? '' : ' disabled') + '>&darr;</button></td>' +
+          '<td><input class="tin" data-i="' + i + '" data-f="name" value="' + esc(t.name) + '"></td>' +
+          '<td><input class="tin turl" data-i="' + i + '" data-f="url" value="' + esc(t.url) + '"></td>' +
+          '<td><button class="x" title="Remove tool" data-tdel="' + i + '">&times;</button></td></tr>';
+      });
+      if (!TOOLS.length) h += '<tr><td colspan="4" class="muted">No tools. Add one below.</td></tr>';
+    }
     $("toolsTbl").innerHTML = h + '</tbody>';
-    $("saveToolsBtn").disabled = !S.toolsLive || !toolsPending();
-    if (!S.toolsLive) $("toolsMsg").textContent = "Tools can be edited once the Tool_Hub_Tools list has loaded.";
   }
 
-  $("toolsTbl").addEventListener("input", e => {
+  $("toolsTbl").addEventListener("change", e => {
     const c = e.target; if (c.dataset.i == null) return;
-    const t = TOOLS[+c.dataset.i];
-    t[c.dataset.f] = c.value.trim();
-    S.tDirty.add(t); c.closest("tr").classList.add("dirty");
-    $("toolsMsg").textContent = ""; $("saveToolsBtn").disabled = !S.toolsLive;
+    const t = TOOLS[+c.dataset.i], f = c.dataset.f, v = c.value.trim();
+    const problem = f === "name" ? (v ? "" : "A tool needs a name.") : urlProblem(v);
+    if (problem){ c.classList.add("bad"); c.dataset.problem = problem; $("toolsNote").textContent = problem; return; }
+    c.classList.remove("bad");
+    const stillBad = document.querySelector("#toolsTbl .tin.bad");
+    $("toolsNote").textContent = stillBad ? stillBad.dataset.problem : "";
+    if (t[f] === v) return;
+    t[f] = v;
+    renderAdmin(); renderCards(null);
+    queueWrite(() => saveTool(t), t);
   });
   $("toolsTbl").addEventListener("click", e => {
     const d = e.target.dataset;
     if (d.up != null || d.down != null){
       const i = +(d.up != null ? d.up : d.down), j = d.up != null ? i - 1 : i + 1;
       [TOOLS[i], TOOLS[j]] = [TOOLS[j], TOOLS[i]];
+      queueWrite(saveOrder, "order");
     } else if (d.tdel != null){
       const t = TOOLS[+d.tdel];
       if (!confirm("Remove " + (t.name || "this tool") + " from the hub for everyone?")) return;
-      TOOLS.splice(+d.tdel, 1); S.tDirty.delete(t);
-      if (t.itemId) S.tRemoved.push(t);
+      t.removed = true;
+      TOOLS.splice(+d.tdel, 1); S.failed.delete(t);
+      queueWrite(async () => { if (t.itemId) await gf(itemsPath(CFG.toolList) + "/" + t.itemId, { method:"DELETE" }).catch(gone); });
     } else return;
-    $("toolsMsg").textContent = ""; renderToolsAdmin();
-  });
-  $("addToolBtn").onclick = () => {
-    const name = $("newToolName").value.trim(), url = $("newToolUrl").value.trim();
-    if (!name){ $("toolsMsg").textContent = "Enter a tool name."; return; }
-    if (!okUrl(url)){ $("toolsMsg").textContent = "Enter the full link, starting with https://"; return; }
-    let id = slug(name) || "tool", n = 2;
-    while (TOOLS.some(t => t.id === id) || S.tRemoved.some(t => t.id === id)) id = slug(name) + "-" + n++;
-    const t = { itemId:null, name, url, id, order:-1 };
-    TOOLS.push(t); S.tDirty.add(t);
-    $("newToolName").value = $("newToolUrl").value = "";
-    $("toolsMsg").textContent = "Added. Save, then tick who can see it above."; renderToolsAdmin();
-  };
-  $("saveToolsBtn").onclick = async () => {
-    const bad = TOOLS.find(t => !t.name || !okUrl(t.url));
-    if (bad){ $("toolsMsg").innerHTML = '<span class="err">Every tool needs a name and a full link starting with https://</span>'; return; }
-    $("saveToolsBtn").disabled = true; $("toolsMsg").textContent = "Saving…";
-    try {
-      for (const t of S.tRemoved) await gf(itemsPath(CFG.toolList) + "/" + t.itemId, { method:"DELETE" });
-      S.tRemoved = [];
-      for (let i = 0; i < TOOLS.length; i++){
-        const t = TOOLS[i];
-        if (!S.tDirty.has(t) && t.order === i) continue;
-        t.order = i;
-        if (t.itemId) await gf(itemsPath(CFG.toolList) + "/" + t.itemId + "/fields", { method:"PATCH", body:JSON.stringify(toolFields(t)) });
-        else t.itemId = (await gf(itemsPath(CFG.toolList), { method:"POST", body:JSON.stringify({ fields:toolFields(t) }) })).id;
-        S.tDirty.delete(t);
-      }
-      $("toolsMsg").textContent = "Saved. The hub is updated for everyone.";
-    } catch(e){ $("toolsMsg").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+    $("toolsNote").textContent = "";
     renderToolsAdmin(); renderAdmin(); renderCards(null);
-  };
+  });
+  function addTool(){
+    if (S.loading || !S.toolsLive){
+      $("toolsNote").textContent = S.loading ? "Still loading, try again in a moment." : "The tool list did not load. Click Manage access to try again, or reload the page.";
+      return false;
+    }
+    const name = $("newToolName").value.trim(), url = $("newToolUrl").value.trim();
+    if (!name){ $("toolsNote").textContent = "Enter a tool name."; return false; }
+    if (urlProblem(url)){ $("toolsNote").textContent = urlProblem(url); return false; }
+    // a key nobody holds yet, so the new tool starts hidden from everyone
+    const taken = k => TOOLS.some(t => t.id === k) || S.people.some(p => p.tools.includes(k));
+    let id = slug(name) || "tool", n = 2;
+    while (taken(id)) id = (slug(name) || "tool") + "-" + n++;
+    const t = { itemId:null, name, url, id, order:TOOLS.length };
+    TOOLS.push(t);
+    $("newToolName").value = $("newToolUrl").value = "";
+    $("toolsNote").textContent = "Added " + name + ". Tick who can see it in the table above.";
+    renderToolsAdmin(); renderAdmin(); renderCards(null);
+    queueWrite(() => saveTool(t), t);
+    return true;
+  }
+  $("addToolBtn").onclick = addTool;
+  ["newToolName", "newToolUrl"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") addTool(); }));
 
+  document.addEventListener("click", e => {
+    if (e.target.classList.contains("retry")) retryFailed();
+    if (e.target.classList.contains("signin")) signInAgain();
+  });
+
+  // opening the panel always re-reads both lists, so people who just signed in show up
   $("manageBtn").onclick = () => {
-    $("admin").classList.remove("hidden"); renderAdmin(); renderToolsAdmin();
+    $("admin").classList.remove("hidden");
+    $("peopleNote").textContent = $("toolsNote").textContent = "";
+    if (!S.loading && !S.failed.size){
+      S.loading = true;
+      S.ready = S.ready.then(() => chain).then(async () => {
+        // a write that failed while we waited keeps its row on screen for Retry, so don't reload over it
+        if (S.failed.size){ S.loading = false; renderAdminAll(); return; }
+        await loadAll();
+        renderCards(null);
+      });
+    }
+    renderAdminAll();
     $("admin").scrollIntoView({ behavior:"smooth" });
   };
-  $("closeAdmin").onclick = () => $("admin").classList.add("hidden");
-  $("signOutBtn").onclick = () => DEMO ? location.reload() : msalApp.logoutRedirect({ account:S.acct });
+  $("closeAdmin").onclick = async () => {
+    const bad = document.querySelector("#toolsTbl .tin.bad");
+    if (bad){ $("toolsNote").textContent = bad.dataset.problem; bad.focus(); return; }
+    if (!S.loading){
+      // typed but not added yet: add it rather than drop it (boxes a failed load disabled are left alone)
+      if (!$("addEmail").disabled && $("addEmail").value.trim() && !addPerson()) return;
+      if (!$("newToolName").disabled && ($("newToolName").value.trim() || $("newToolUrl").value.trim()) && !addTool()) return;
+    }
+    const btn = $("closeAdmin");
+    if (pending){                                    // close once everything is written, so a failure is seen here
+      btn.disabled = true; btn.textContent = "Saving…";
+      while (pending) await chain;
+      btn.disabled = false; btn.textContent = "Done";
+    }
+    if (S.failed.size && !confirm("Some changes did not save. Close anyway?")) return;
+    $("admin").classList.add("hidden");
+  };
+  $("signOutBtn").onclick = () => {
+    if (S.loggingOut) return;                        // the first click is already signing out
+    if ((pending || S.failed.size) && !confirm("Some changes have not been saved. Sign out anyway?")) return;
+    if (DEMO) return location.reload();
+    S.loggingOut = S.redirecting = true;
+    msalApp.logoutRedirect({ account:S.acct }).catch(() => { S.loggingOut = S.redirecting = false; });
+  };
 
   /* ── start ── */
   async function enter(acct){
     S.acct = acct;
-    S.email = String(acct.username || "").toLowerCase();
-    S.name = acct.name || S.email;
-    S.admin = CFG.admins.includes(S.email);
+    S.name = acct.name || acct.username || "";
+    S.ids = [lower(acct.username)];
     $("whoName").textContent = S.name;
     $("bar").classList.remove("hidden");
+    showMsg('<p>Loading your tools…</p>');
+    // the sign-in name (UPN) and the mailbox address can differ; match people on either
+    try {
+      const me = await gf("/me?$select=mail,userPrincipalName");
+      [me.mail, me.userPrincipalName].map(lower).forEach(v => { if (v && !S.ids.includes(v)) S.ids.push(v); });
+      S.email = lower(me.mail) || S.ids[0];
+    } catch(e){ S.email = S.ids[0]; }
+    S.admin = S.ids.some(v => CFG.admins.includes(v));
     $("manageBtn").classList.toggle("hidden", !S.admin);
     if (S.admin) renderCards(null);
-    else showMsg('<p>Loading your tools…</p>');
-    try {
-      S.siteId = (await gf("/sites/" + CFG.site + "?$select=id")).id;
-      try { await loadTools(); }
-      catch(e){ if (S.admin) showMsg('<p class="err">Could not load the tool list, showing the built-in one. ' + esc(e.message) + '</p>'); }
-      if (S.admin) renderCards(null);
-      if (!(await ensureList(CFG.list, ACCESS_COLS))){ renderCards([]); return; }
-      await loadPeople();
-      if (!S.admin && !S.people.some(p => p.email === S.email)){
-        // first visit: add a row so they show up on the Manage access screen
-        const me = { itemId:null, email:S.email, name:S.name, tools:[] };
-        try {
-          me.itemId = (await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields:{ Title:S.email, DisplayName:S.name, Tools:"" } }) })).id;
-          S.people.push(me);
-        } catch(e){}
-      }
-      if (!S.admin){
-        const me = S.people.find(p => p.email === S.email);
-        renderCards(me ? me.tools : []);
-      }
-    } catch(e){
-      if (S.admin) showMsg('<p class="err">Could not load the access list. ' + esc(e.message) + '</p>');
-      else showMsg('<h2>Could not load your tools</h2><p class="err">' + esc(e.message) + '</p>');
+    await (S.ready = loadAll());
+    if (S.admin){
+      renderCards(null);
+      if (S.loadErr || S.toolsErr) showMsg('<p class="err">' + esc(S.loadErr ? "Could not load the access list. " + S.loadErr : "Could not load the tool list, showing the built-in one. " + S.toolsErr) + '</p>');
+      return;
     }
+    const mine = S.people.filter(p => S.ids.includes(p.email));
+    if (S.accessLive && !S.loadErr && !mine.length){
+      // first visit: add a row so they show up on the Manage access screen
+      try { await gf(itemsPath(CFG.list), { method:"POST", body:JSON.stringify({ fields:{ Title:S.email, DisplayName:S.name, Tools:"" } }) }); }
+      catch(e){}
+    }
+    // a tool list that exists but can't be read is an error, not "no tools"
+    if (S.loadErr || S.toolsErr){ showMsg('<h2>Could not load your tools</h2><p class="err">' + esc(S.loadErr || S.toolsErr) + '</p>'); return; }
+    renderCards([].concat.apply([], mine.map(p => p.tools)));
   }
 
   async function start(){
     if (DEMO) return enter({ username:DEMO === "admin" ? CFG.admins[0] : "pat@metro1solutions.com", name:DEMO === "admin" ? "Saul Braha" : "Pat Demo" });
+    // this page is the "Sign in again" popup: the hub that opened it reads the answer and closes it
+    if (window.opener && window.opener !== window && String(window.name).indexOf("msal.") === 0) return;
     if (!msalApp){ showMsg('<p class="err">The Microsoft sign-in library did not load. Refresh the page.</p>'); return; }
     await msalApp.initialize();
     let res = null, err = "";
     try { res = await msalApp.handleRedirectPromise(); } catch(e){ err = "Sign-in failed: " + (e.errorMessage || e.message || e); }
-    const acct = (res && res.account) || msalApp.getAllAccounts()[0];
-    if (acct) enter(acct); else showGate(err);
+    const acct = (res && res.account) || msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+    if (acct){ msalApp.setActiveAccount(acct); enter(acct); } else showGate(err);
   }
 
   /* local testing only: open http://localhost:<port>/?demo=admin or ?demo=user
@@ -674,15 +887,18 @@
   async function demoGraph(path, opts){
     await new Promise(r => setTimeout(r, 60));
     const m = opts.method || "GET";
+    if (/^\/me\?/.test(path)) return { mail:S.ids[0], userPrincipalName:S.ids[0] };
     if (/\/sites\/[^/]+\?/.test(path)) return { id:"demo-site" };
     if (m === "POST" && /\/lists$/.test(path)){ const n = JSON.parse(opts.body).displayName; demoLists[n] = []; return { id:n }; }
     const lm = path.match(/\/lists\/([^/?]+)(.*)$/), rows = demoLists[lm[1]], rest = lm[2], id = rest.split("/")[2];
     if (!rows){ const e = new Error("SharePoint 404: list not found"); e.status = 404; throw e; }
     if (/^\?/.test(rest)) return { id:lm[1] };
     if (/^\/items\?/.test(rest)) return { value:JSON.parse(JSON.stringify(rows)) };
+    const row = rows.find(r => r.id === id);
+    if ((m === "PATCH" || m === "DELETE") && !row){ const e = new Error("SharePoint 404: item not found"); e.status = 404; throw e; }
     if (m === "POST"){ const nid = String(++demoSeq); rows.push({ id:nid, fields:JSON.parse(opts.body).fields }); return { id:nid }; }
-    if (m === "PATCH"){ Object.assign(rows.find(r => r.id === id).fields, JSON.parse(opts.body)); return {}; }
-    if (m === "DELETE"){ rows.splice(rows.findIndex(r => r.id === id), 1); return null; }
+    if (m === "PATCH"){ Object.assign(row.fields, JSON.parse(opts.body)); return {}; }
+    if (m === "DELETE"){ rows.splice(rows.indexOf(row), 1); return null; }
     return {};
   }
 
